@@ -85,6 +85,7 @@ CREATE TABLE `leaf_alloc` (
 ) ENGINE=InnoDB;
 
 insert into leaf_alloc(biz_tag, max_id, step, description) values('leaf-segment-test', 1, 2000, 'Test leaf Segment Mode Get Id')
+insert into leaf_alloc(biz_tag, max_id, step, description) values('dataworks', 1, 10, 'Test leaf Segment Mode Get Id')
 ```
 
 ##### 配置相关数据项

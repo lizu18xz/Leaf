@@ -88,6 +88,7 @@ public class SegmentIDGenImpl implements IDGen {
         logger.info("update cache from db");
         StopWatch sw = new Slf4JStopWatch();
         try {
+            //获取所有设置的业务名称
             List<String> dbTags = dao.getAllTags();
             if (dbTags == null || dbTags.isEmpty()) {
                 return;
@@ -97,6 +98,7 @@ public class SegmentIDGenImpl implements IDGen {
             List<String> removeTags = new ArrayList<String>(cacheTags);
             //db中新加的tags灌进cache
             insertTags.removeAll(cacheTags);
+            //新增的业务标签初始化Buffer
             for (String tag : insertTags) {
                 SegmentBuffer buffer = new SegmentBuffer();
                 buffer.setKey(tag);
@@ -188,12 +190,24 @@ public class SegmentIDGenImpl implements IDGen {
         sw.stop("updateSegmentFromDb", key + " " + segment);
     }
 
+
+    /**
+     *
+     * Leaf 取号段的时机是在号段消耗完的时候进行的，也就意味着号段临界点的ID下发时间取决于下一次从DB取回号段的时间，
+     * 并且在这期间进来的请求也会因为DB号段没有取回来，导致线程阻塞。如果请求DB的网络和DB的性能稳定，这种情况对系统的影响是不大的，
+     * 但是假如取DB的时候网络发生抖动，或者DB发生慢查询就会导致整个系统的响应时间变慢。
+     为此，我们希望DB取号段的过程能够做到无阻塞，不需要在DB取号段的时候阻塞请求线程，即当号段消费到某个点时就异步的把下一个号段加载到内存中。
+     而不需要等到号段用尽的时候才去更新号段。
+     *
+     * */
     public Result getIdFromSegmentBuffer(final SegmentBuffer buffer) {
         while (true) {
             try {
+                //获取读锁
                 buffer.rLock().lock();
                 final Segment segment = buffer.getCurrent();
                 if (!buffer.isNextReady() && (segment.getIdle() < 0.9 * segment.getStep()) && buffer.getThreadRunning().compareAndSet(false, true)) {
+                    //异步修改数据库的值,当号段消费到某个点时就异步的把下一个号段加载到内存中
                     service.execute(new Runnable() {
                         @Override
                         public void run() {
@@ -207,6 +221,7 @@ public class SegmentIDGenImpl implements IDGen {
                                 logger.warn(buffer.getKey() + " updateSegmentFromDb exception", e);
                             } finally {
                                 if (updateOk) {
+                                    //获取写锁
                                     buffer.wLock().lock();
                                     buffer.setNextReady(true);
                                     buffer.getThreadRunning().set(false);
@@ -225,8 +240,11 @@ public class SegmentIDGenImpl implements IDGen {
             } finally {
                 buffer.rLock().unlock();
             }
+
+            //在当前buffer已消费完而另外那个buffer还未从数据库更新完成
             waitAndSleep(buffer);
             try {
+                //获取写锁,开始切换 buffer,在内存中预存的buffer
                 buffer.wLock().lock();
                 final Segment segment = buffer.getCurrent();
                 long value = segment.getValue().getAndIncrement();
